@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.venv/
+build/
+dist/
+*.spec
+inventory_audit_output/
+*_inventory_audit.csv
+*_audit.csv
