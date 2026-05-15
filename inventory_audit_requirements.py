@@ -1,9 +1,9 @@
-"""Endpoint requirements for Inventory Audit v1."""
+"""Endpoint requirements for Inventory Audit."""
 
 from __future__ import annotations
 
 APP_NAME = "Inventory Audit"
-APP_VERSION = "1.0"
+APP_VERSION = "1.1"
 
 ART_FIELDS = [
     "ca_16x9",

@@ -8,7 +8,7 @@ import re
 from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Callable, Iterable, Sequence
 
 from inventory_audit_requirements import ART_FIELDS, ENDPOINT_ORDER, get_art_requirements, get_media_requirements
 
@@ -64,9 +64,18 @@ class AuditEntity:
 
 @dataclass(frozen=True)
 class AuditResult:
-    output_path: Path
+    csv_path: Path
+    xlsx_path: Path
     rows: list[OrderedDict[str, str]]
     source_file_count: int
+
+    @property
+    def output_path(self) -> Path:
+        return self.csv_path
+
+    @property
+    def output_paths(self) -> tuple[Path, Path]:
+        return self.csv_path, self.xlsx_path
 
     @property
     def entity_count(self) -> int:
@@ -349,31 +358,31 @@ def audit_entity(entity: AuditEntity) -> OrderedDict[str, str]:
     art_assets = _best_art_assets(entity.files)
     media_applicable = entity.content_type in {"Movie", "Episode"}
 
-    row: OrderedDict[str, str] = OrderedDict()
-    row["content_type"] = entity.content_type
-    row["name"] = entity.name
-    row["title"] = entity.title
-    row["sku"] = entity.sku
-    row["season"] = entity.season
-    row["episode"] = entity.episode
-    row["s3_path"] = entity.s3_path
-    row["file_count"] = str(len(entity.files))
+    values: dict[str, str] = {}
+    values["content_type"] = entity.content_type
+    values["name"] = entity.name
+    values["title"] = entity.title
+    values["sku"] = entity.sku
+    values["season"] = entity.season
+    values["episode"] = entity.episode
+    values["s3_path"] = entity.s3_path
+    values["file_count"] = str(len(entity.files))
 
     for field_name, extension in (("mov", ".mov"), ("vtt", ".vtt"), ("srt", ".srt")):
         asset = media_assets.get(extension)
-        row[field_name] = "yes" if asset and media_applicable else "n/a" if not media_applicable else "no"
-        row[f"{field_name}_file"] = asset.filename if asset else ""
+        values[field_name] = "yes" if asset and media_applicable else "n/a" if not media_applicable else "no"
+        values[f"{field_name}_file"] = asset.filename if asset else ""
 
     for art_field in ART_FIELDS:
         asset = art_assets.get(art_field)
-        row[art_field] = f"{asset[0]}x{asset[1]}" if asset else ""
+        values[art_field] = f"{asset[0]}x{asset[1]}" if asset else ""
 
     for endpoint in ENDPOINT_ORDER:
-        missing = _missing_requirements(row, endpoint, entity.content_type)
-        row[endpoint] = "complete" if not missing else "incomplete"
-        row[f"missing_{_safe_header(endpoint)}"] = ", ".join(missing)
+        missing = _missing_requirements(values, endpoint, entity.content_type)
+        values[endpoint] = "complete" if not missing else "incomplete"
+        values[f"missing_{_safe_header(endpoint)}"] = ", ".join(missing)
 
-    return row
+    return OrderedDict((header, values.get(header, "")) for header in report_headers())
 
 
 def _best_media_assets(files: Iterable[InventoryItem]) -> dict[str, InventoryItem]:
@@ -416,7 +425,7 @@ def parse_art_asset(filename: str) -> tuple[str, int, int] | None:
     return f"{kind}_{ratio}", width, height
 
 
-def _missing_requirements(row: OrderedDict[str, str], endpoint: str, content_type: str) -> list[str]:
+def _missing_requirements(row: dict[str, str], endpoint: str, content_type: str) -> list[str]:
     missing: list[str] = []
     for media_field in sorted(get_media_requirements(endpoint, content_type)):
         if row.get(media_field) != "yes":
@@ -431,65 +440,158 @@ def _safe_header(endpoint: str) -> str:
     return endpoint.replace("+", "plus").replace(" ", "_").replace("-", "_")
 
 
+def report_headers() -> list[str]:
+    """Return the user-facing report column order.
+
+    Endpoint completion columns intentionally come first so the report opens on
+    readiness status before lower-level file detail.
+    """
+
+    missing_headers = [f"missing_{_safe_header(endpoint)}" for endpoint in ENDPOINT_ORDER]
+    identity_headers = ["content_type", "name", "title", "sku", "season", "episode", "s3_path", "file_count"]
+    media_headers = ["mov", "mov_file", "vtt", "vtt_file", "srt", "srt_file"]
+    return [*ENDPOINT_ORDER, *missing_headers, *identity_headers, *media_headers, *ART_FIELDS]
+
+
 def write_audit_csv(rows: Sequence[OrderedDict[str, str]], output_path: Path | str) -> Path:
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
 
-    if rows:
-        fieldnames = list(rows[0].keys())
-    else:
-        fieldnames = _empty_report_headers()
+    fieldnames = report_headers()
 
     with destination.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
         writer.writeheader()
         writer.writerows(rows)
 
     return destination
 
 
-def _empty_report_headers() -> list[str]:
-    headers = [
-        "content_type",
-        "name",
-        "title",
-        "sku",
-        "season",
-        "episode",
-        "s3_path",
-        "file_count",
-        "mov",
-        "mov_file",
-        "vtt",
-        "vtt_file",
-        "srt",
-        "srt_file",
-        *ART_FIELDS,
-    ]
-    for endpoint in ENDPOINT_ORDER:
-        headers.extend([endpoint, f"missing_{_safe_header(endpoint)}"])
-    return headers
+def write_audit_xlsx(rows: Sequence[OrderedDict[str, str]], output_path: Path | str) -> Path:
+    destination = Path(output_path).with_suffix(".xlsx")
+    destination.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        from openpyxl import Workbook
+        from openpyxl.styles import Alignment, Font, PatternFill
+        from openpyxl.utils import get_column_letter
+    except ImportError as exc:  # pragma: no cover - depends on app packaging
+        raise InventoryAuditError("openpyxl is required to write Excel output. Install requirements.txt.") from exc
+
+    headers = report_headers()
+    workbook = Workbook()
+    worksheet = workbook.active
+    worksheet.title = "Inventory Audit"
+    worksheet.append(headers)
+
+    for row in rows:
+        worksheet.append([row.get(header, "") for header in headers])
+
+    header_fill = PatternFill("solid", fgColor="1F4E78")
+    header_font = Font(color="FFFFFF", bold=True)
+    complete_fill = PatternFill("solid", fgColor="C6EFCE")
+    incomplete_fill = PatternFill("solid", fgColor="FFC7CE")
+    missing_fill = PatternFill("solid", fgColor="FFF2CC")
+
+    for cell in worksheet[1]:
+        cell.fill = header_fill
+        cell.font = header_font
+        cell.alignment = Alignment(horizontal="center")
+
+    endpoint_cols = {endpoint: headers.index(endpoint) + 1 for endpoint in ENDPOINT_ORDER}
+    missing_cols = {f"missing_{_safe_header(endpoint)}": headers.index(f"missing_{_safe_header(endpoint)}") + 1 for endpoint in ENDPOINT_ORDER}
+    for row_idx in range(2, worksheet.max_row + 1):
+        for col_idx in endpoint_cols.values():
+            cell = worksheet.cell(row_idx, col_idx)
+            if cell.value == "complete":
+                cell.fill = complete_fill
+            elif cell.value == "incomplete":
+                cell.fill = incomplete_fill
+        for col_idx in missing_cols.values():
+            cell = worksheet.cell(row_idx, col_idx)
+            if cell.value:
+                cell.fill = missing_fill
+
+    worksheet.freeze_panes = "A2"
+    worksheet.auto_filter.ref = worksheet.dimensions
+
+    for col_idx, header in enumerate(headers, start=1):
+        max_len = len(header)
+        for row_idx in range(2, min(worksheet.max_row, 80) + 1):
+            value = worksheet.cell(row_idx, col_idx).value
+            max_len = max(max_len, len(str(value or "")))
+        width = min(max(max_len + 2, 10), 54)
+        if header.startswith("missing_") or header.endswith("_file") or header == "s3_path":
+            width = min(max(width, 24), 70)
+        worksheet.column_dimensions[get_column_letter(col_idx)].width = width
+
+    workbook.save(destination)
+    return destination
+
+
+def resolve_output_paths(output_base: Path | str) -> tuple[Path, Path]:
+    base = Path(output_base)
+    if base.suffix.lower() == ".csv":
+        return base, base.with_suffix(".xlsx")
+    if base.suffix.lower() in {".xlsx", ".xlsm", ".xls"}:
+        return base.with_suffix(".csv"), base.with_suffix(".xlsx")
+    return base.with_suffix(".csv"), base.with_suffix(".xlsx")
+
+
+def audit_items(items: Sequence[InventoryItem], inventory_uri: str, output_base: Path | str) -> AuditResult:
+    entities = discover_entities(items, inventory_uri)
+    rows = build_audit_rows(entities)
+    csv_path, xlsx_path = resolve_output_paths(output_base)
+    write_audit_csv(rows, csv_path)
+    write_audit_xlsx(rows, xlsx_path)
+    return AuditResult(csv_path=csv_path, xlsx_path=xlsx_path, rows=rows, source_file_count=len(items))
 
 
 def run_audit(input_path: Path | str, output_path: Path | str) -> AuditResult:
     inventory_uri, items = read_inventory(input_path)
-    entities = discover_entities(items, inventory_uri)
-    rows = build_audit_rows(entities)
-    destination = write_audit_csv(rows, output_path)
-    return AuditResult(output_path=destination, rows=rows, source_file_count=len(items))
+    return audit_items(items, inventory_uri, output_path)
+
+
+def run_s3_audit(
+    s3_uri: str,
+    output_path: Path | str,
+    profile: str = "",
+    region: str = "",
+    progress_callback: Callable[[str], None] | None = None,
+) -> AuditResult:
+    from inventory_audit_s3 import list_inventory_from_s3
+
+    inventory_uri, items = list_inventory_from_s3(
+        s3_uri,
+        profile=profile,
+        region=region,
+        progress_callback=progress_callback,
+    )
+    return audit_items(items, inventory_uri, output_path)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Audit S3 inventory CSV/XLSX files against endpoint requirements.")
-    parser.add_argument("input", help="Inventory CSV or XLSX file")
-    parser.add_argument("-o", "--output", help="Output audit CSV path")
+    parser.add_argument("input", nargs="?", help="Inventory CSV or XLSX file")
+    parser.add_argument("--s3", dest="s3_uri", help="S3 URI to scan directly, such as s3://bucket/movies/")
+    parser.add_argument("--profile", default="", help="Optional AWS profile name for direct S3 scans")
+    parser.add_argument("--region", default="", help="Optional AWS region for direct S3 scans")
+    parser.add_argument("-o", "--output", help="Output audit base path. Both .csv and .xlsx files are written.")
     args = parser.parse_args(argv)
 
-    input_path = Path(args.input)
-    output_path = Path(args.output) if args.output else input_path.with_name(f"{input_path.stem}_audit.csv")
+    if bool(args.input) == bool(args.s3_uri):
+        parser.error("Provide exactly one inventory file path or --s3 s3://bucket/prefix.")
 
-    result = run_audit(input_path, output_path)
-    print(f"Wrote {result.output_path}")
+    if args.s3_uri:
+        output_path = Path(args.output) if args.output else Path("inventory_audit_s3_report")
+        result = run_s3_audit(args.s3_uri, output_path, profile=args.profile, region=args.region)
+    else:
+        input_path = Path(str(args.input))
+        output_path = Path(args.output) if args.output else input_path.with_name(f"{input_path.stem}_audit")
+        result = run_audit(input_path, output_path)
+
+    print(f"Wrote {result.csv_path}")
+    print(f"Wrote {result.xlsx_path}")
     print(f"Audited {result.entity_count} row(s) from {result.source_file_count} inventory file(s).")
     return 0
 

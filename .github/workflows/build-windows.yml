@@ -1,0 +1,39 @@
+name: Build Windows
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/build-windows.yml'
+      - 'build_windows.bat'
+      - 'inventory_audit_app.py'
+      - 'inventory_audit_core.py'
+      - 'inventory_audit_requirements.py'
+      - 'inventory_audit_s3.py'
+      - 'requirements.txt'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          architecture: 'x64'
+
+      - name: Build Windows distribution
+        shell: cmd
+        run: build_windows.bat
+
+      - name: Upload Windows zip artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Inventory_Audit_v1_1-windows
+          path: dist/Inventory_Audit_v1_1-windows.zip
+          if-no-files-found: error

@@ -1,10 +1,14 @@
 __pycache__/
+.DS_Store
 *.pyc
 .pytest_cache/
 .venv/
+.venv-x86/
 build/
 dist/
 *.spec
 inventory_audit_output/
 *_inventory_audit.csv
+*_inventory_audit.xlsx
 *_audit.csv
+*_audit.xlsx

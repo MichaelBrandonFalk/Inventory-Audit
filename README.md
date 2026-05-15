@@ -1,10 +1,11 @@
 # Inventory Audit
 
-Inventory Audit v1 audits S3 inventory exports against first-pass endpoint readiness rules.
+Inventory Audit v1.1 audits S3 inventories against first-pass endpoint readiness rules.
 
 ## What v1 Does
 
 - Reads S3 inventory `.csv`, `.xlsx`, or `.xlsm` files with `bucket`, `key`, `size_bytes`, `last_modified`, and `s3_uri` columns.
+- Scans S3 paths directly with AWS credentials from the default credential chain or an optional AWS profile.
 - Detects `Movie`, `Series`, `Season`, and `Episode` rows from S3-style folder paths.
 - Splits parent folder names into title and SKU when the folder ends with a UUID or long numeric SKU, such as `county_rescue_2310526531722`.
 - Outputs one audit row per movie, series root, season, and episode.
@@ -18,7 +19,8 @@ Inventory Audit v1 audits S3 inventory exports against first-pass endpoint readi
   - `bg_16x9`
   - `bg_2x3`
   - `tt_9x5`
-- Marks each endpoint as `complete` or `incomplete`, with a companion `missing_*` field listing missing requirements.
+- Marks each endpoint as `complete` or `incomplete`, with endpoint status columns at the far left of the report.
+- Writes both `.csv` and Excel `.xlsx` reports.
 
 ## Endpoint Rules Included
 
@@ -44,12 +46,18 @@ python3 inventory_audit_app.py
 CLI mode is also available:
 
 ```bash
-python3 inventory_audit_core.py /path/to/inventory.csv -o /path/to/audit.csv
+python3 inventory_audit_core.py /path/to/inventory.csv -o /path/to/audit
+```
+
+Direct S3 scan:
+
+```bash
+python3 inventory_audit_core.py --s3 s3://bucket/path/ --profile optional-profile -o /path/to/audit
 ```
 
 ## Install Requirements
 
-CSV support uses only the Python standard library. XLSX input requires `openpyxl`.
+CSV support uses only the Python standard library. XLSX input/output requires `openpyxl`. Direct S3 scans require `boto3`.
 
 ```bash
 python3 -m pip install -r requirements.txt
@@ -58,13 +66,26 @@ python3 -m pip install -r requirements.txt
 ## Build A macOS App
 
 ```bash
-./build_inventory_audit_v1_0.sh
+./build_inventory_audit_v1_1.sh
 ```
 
 The build script writes:
 
 ```text
 dist/Inventory Audit.app
+dist/Inventory_Audit_v1_1-macOS-arm64.zip
+```
+
+Intel macOS:
+
+```bash
+./build_inventory_audit_v1_1_intel.sh
+```
+
+Windows builds are handled by GitHub Actions:
+
+```text
+.github/workflows/build-windows.yml
 ```
 
 ## Phase 2 Notes

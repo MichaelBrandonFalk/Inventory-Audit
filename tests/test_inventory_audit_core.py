@@ -8,7 +8,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from inventory_audit_core import discover_entities, parse_art_asset, read_inventory, run_audit
+from inventory_audit_core import discover_entities, parse_art_asset, read_inventory, report_headers, run_audit
 
 
 class InventoryAuditCoreTests(unittest.TestCase):
@@ -44,6 +44,11 @@ class InventoryAuditCoreTests(unittest.TestCase):
             self.assertEqual(row["YouTube"], "complete")
             self.assertEqual(row["Amazon"], "incomplete")
             self.assertIn("srt", row["missing_Amazon"])
+            self.assertTrue(result.csv_path.exists())
+            self.assertTrue(result.xlsx_path.exists())
+
+    def test_endpoint_columns_are_first(self) -> None:
+        self.assertEqual(report_headers()[:6], ["Axinom", "Amazon", "Roku", "Frndly", "T+", "YouTube"])
 
     def test_series_inventory_discovers_series_season_and_episode_rows(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
