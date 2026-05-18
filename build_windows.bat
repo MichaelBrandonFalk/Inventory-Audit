@@ -5,7 +5,7 @@ set "ROOT_DIR=%~dp0"
 set "VENV_DIR=%ROOT_DIR%.venv-windows"
 set "PYINSTALLER=%VENV_DIR%\Scripts\pyinstaller.exe"
 set "PYTHON_EXE=%VENV_DIR%\Scripts\python.exe"
-set "ZIP_PATH=%ROOT_DIR%dist\Inventory_Audit_v1_2-windows.zip"
+set "ZIP_PATH=%ROOT_DIR%dist\Inventory_Audit_v1_3-windows.zip"
 
 if not exist "%PYINSTALLER%" (
   if not exist "%PYTHON_EXE%" (

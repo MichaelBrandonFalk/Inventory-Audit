@@ -42,9 +42,16 @@ def scan_inventory_to_csv(
     """List every object under an S3 URI, write inventory CSV, and return rows."""
 
     location = parse_s3_inventory_uri(s3_uri)
+    notify_progress(progress_callback, f"Normalized S3 URI: {location.normalized_uri}")
+    notify_progress(progress_callback, "Step 1/2: creating raw S3 inventory CSV.")
     items = list_inventory_from_s3(location, progress_callback=progress_callback)
     inventory_csv_path = inventory_report_path(output_base)
+    notify_progress(progress_callback, f"Writing raw inventory CSV to {inventory_csv_path}")
     write_inventory_report(location.normalized_uri, items, inventory_csv_path)
+    notify_progress(
+        progress_callback,
+        f"Raw inventory CSV complete: {inventory_csv_path} ({len(items)} object(s))",
+    )
     return inventory_csv_path, location.normalized_uri, items
 
 
@@ -116,8 +123,20 @@ def list_inventory_from_s3(
     except ImportError as exc:  # pragma: no cover - depends on app packaging
         raise InventoryAuditError("boto3 is required for direct S3 scans. Install requirements.txt.") from exc
 
+    os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
+
+    notify_progress(progress_callback, "Reading S3 Organizer region and saved credentials.")
     credentials = load_s3_organizer_credentials()
     region = load_s3_organizer_region()
+    if region:
+        notify_progress(progress_callback, f"Using S3 Organizer/default AWS region: {region}")
+    else:
+        notify_progress(progress_callback, "No saved AWS region found; using boto3 default region behavior.")
+    if credentials:
+        notify_progress(progress_callback, "Using saved S3 Organizer credentials.")
+    else:
+        notify_progress(progress_callback, "No saved S3 Organizer credentials found; using default AWS credential chain.")
+
     session_kwargs: dict[str, str] = {}
     if region:
         session_kwargs["region_name"] = region
@@ -128,15 +147,24 @@ def list_inventory_from_s3(
             session_kwargs["aws_session_token"] = credentials.session_token
 
     try:
+        notify_progress(progress_callback, "Creating S3 client.")
         client = boto3.session.Session(**session_kwargs).client(
             "s3",
-            config=BotoConfig(max_pool_connections=32, retries={"mode": "standard", "max_attempts": 6}),
+            config=BotoConfig(
+                max_pool_connections=32,
+                retries={"mode": "standard", "max_attempts": 6},
+                connect_timeout=10,
+                read_timeout=60,
+            ),
         )
     except (BotoCoreError, NoCredentialsError) as exc:
         raise InventoryAuditError(map_aws_error(exc)) from exc
 
     items: list[InventoryItem] = []
     continuation_token: str | None = None
+    page_number = 1
+
+    notify_progress(progress_callback, f"Listing objects under {location.normalized_uri} (read-only).")
 
     while True:
         request_kwargs: dict[str, object] = {"Bucket": location.bucket, "Prefix": location.prefix, "MaxKeys": 1000}
@@ -144,6 +172,7 @@ def list_inventory_from_s3(
             request_kwargs["ContinuationToken"] = continuation_token
 
         try:
+            notify_progress(progress_callback, f"Requesting S3 object page {page_number}...")
             response = call_with_retries(
                 lambda: client.list_objects_v2(**request_kwargs),
                 progress_callback=progress_callback,
@@ -168,11 +197,12 @@ def list_inventory_from_s3(
                 )
             )
 
-        notify_progress(progress_callback, f"Scanned {len(items)} object(s) so far...")
+        notify_progress(progress_callback, f"Scanned {len(items)} object(s) so far after page {page_number}.")
 
         if not response.get("IsTruncated"):
             break
         continuation_token = response.get("NextContinuationToken")
+        page_number += 1
 
     return items
 
@@ -252,7 +282,7 @@ def call_with_retries(
     operation_name: str = "aws_operation",
 ):
     try:
-        from botocore.exceptions import BotoCoreError, ClientError, EndpointConnectionError
+        from botocore.exceptions import BotoCoreError, ClientError, EndpointConnectionError, NoCredentialsError
     except ImportError as exc:  # pragma: no cover
         raise InventoryAuditError("botocore is required for direct S3 scans. Install requirements.txt.") from exc
 
@@ -260,7 +290,7 @@ def call_with_retries(
     for attempt in range(1, MAX_RETRY_ATTEMPTS + 1):
         try:
             return operation()
-        except (EndpointConnectionError, BotoCoreError, ClientError) as exc:
+        except (NoCredentialsError, EndpointConnectionError, BotoCoreError, ClientError) as exc:
             if attempt >= MAX_RETRY_ATTEMPTS or not is_retryable_exception(exc):
                 raise
             notify_progress(
@@ -273,10 +303,12 @@ def call_with_retries(
 
 def is_retryable_exception(error: Exception) -> bool:
     try:
-        from botocore.exceptions import BotoCoreError, ClientError, EndpointConnectionError
+        from botocore.exceptions import BotoCoreError, ClientError, EndpointConnectionError, NoCredentialsError
     except ImportError:
         return False
 
+    if isinstance(error, NoCredentialsError):
+        return False
     if isinstance(error, EndpointConnectionError):
         return True
     if isinstance(error, BotoCoreError):

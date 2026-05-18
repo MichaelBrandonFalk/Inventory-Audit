@@ -5,11 +5,13 @@ from __future__ import annotations
 from pathlib import Path
 import re
 import threading
+import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 from inventory_audit_core import InventoryAuditError, run_audit, run_s3_audit
 from inventory_audit_requirements import APP_NAME, APP_VERSION
+from inventory_audit_s3 import scan_inventory_to_csv
 
 
 APP_TITLE = f"{APP_NAME} v{APP_VERSION}"
@@ -24,7 +26,11 @@ class InventoryAuditApp:
         self.input_path = tk.StringVar()
         self.s3_uri = tk.StringVar()
         self.output_dir = tk.StringVar(value=str(_default_output_dir()))
+        self.status_text = tk.StringVar(value="Ready")
         self.running = False
+        self.run_started_at: float | None = None
+        self.current_phase = "Ready"
+        self.heartbeat_after_id: str | None = None
 
         self._build()
 
@@ -48,12 +54,16 @@ class InventoryAuditApp:
         button_frame.grid(row=5, column=0, columnspan=3, sticky="w", pady=(12, 18))
         self.file_button = ttk.Button(button_frame, text="Audit File", command=self._run_file)
         self.file_button.pack(side="left", padx=(0, 10))
+        self.inventory_button = ttk.Button(button_frame, text="Create S3 Inventory CSV", command=self._run_s3_inventory)
+        self.inventory_button.pack(side="left", padx=(0, 10))
         self.s3_button = ttk.Button(button_frame, text="Audit S3 Path", command=self._run_s3)
         self.s3_button.pack(side="left")
 
+        ttk.Label(frame, textvariable=self.status_text).grid(row=6, column=0, columnspan=3, sticky="w", pady=(0, 8))
+
         self.log = scrolledtext.ScrolledText(frame, height=28, wrap="word")
-        self.log.grid(row=6, column=0, columnspan=3, sticky="nsew")
-        frame.rowconfigure(6, weight=1)
+        self.log.grid(row=7, column=0, columnspan=3, sticky="nsew")
+        frame.rowconfigure(7, weight=1)
 
         self._log("Ready. Choose an inventory export or enter an S3 path to start.")
 
@@ -108,6 +118,12 @@ class InventoryAuditApp:
         self._handle_result(result)
 
     def _run_s3(self) -> None:
+        self._start_s3_run(audit_after_inventory=True)
+
+    def _run_s3_inventory(self) -> None:
+        self._start_s3_run(audit_after_inventory=False)
+
+    def _start_s3_run(self, audit_after_inventory: bool) -> None:
         if self.running:
             return
         s3_value = self.s3_uri.get().strip()
@@ -121,49 +137,95 @@ class InventoryAuditApp:
 
         output_path = Path(output_value) / f"{_safe_output_stem(s3_value)}_inventory_audit_v{APP_VERSION.replace('.', '_')}"
         self._set_running(True)
-        self._log(f"Scanning {s3_value} ...")
+        mode = "S3 audit" if audit_after_inventory else "S3 inventory export"
+        self._record_progress(f"Starting {mode} for {s3_value}")
+        self._log("This is read-only. The app will list S3 objects and write local report files only.")
 
         worker = threading.Thread(
             target=self._run_s3_worker,
-            args=(s3_value, output_path),
+            args=(s3_value, output_path, audit_after_inventory),
             daemon=True,
         )
         worker.start()
 
-    def _run_s3_worker(self, s3_uri: str, output_path: Path) -> None:
+    def _run_s3_worker(self, s3_uri: str, output_path: Path, audit_after_inventory: bool) -> None:
         try:
-            result = run_s3_audit(
-                s3_uri,
-                output_path,
-                progress_callback=lambda message: self.root.after(0, self._log, f"S3 scan: {message}"),
-            )
+            if audit_after_inventory:
+                result = run_s3_audit(s3_uri, output_path, progress_callback=self._thread_progress)
+            else:
+                inventory_csv_path, _inventory_uri, items = scan_inventory_to_csv(
+                    s3_uri,
+                    output_path,
+                    progress_callback=self._thread_progress,
+                )
+                self.root.after(0, self._handle_inventory_result, inventory_csv_path, len(items))
         except (InventoryAuditError, OSError) as exc:
             self.root.after(0, self._handle_error, str(exc))
         except Exception as exc:  # noqa: BLE001
             self.root.after(0, self._handle_error, f"Unexpected error: {exc}")
         else:
-            self.root.after(0, self._handle_result, result)
+            if audit_after_inventory:
+                self.root.after(0, self._handle_result, result)
         finally:
             self.root.after(0, self._set_running, False)
 
+    def _thread_progress(self, message: str) -> None:
+        self.root.after(0, self._record_progress, message)
+
+    def _record_progress(self, message: str) -> None:
+        self.current_phase = message
+        self.status_text.set(message)
+        self._log(f"S3: {message}")
+
     def _handle_result(self, result) -> None:
-        self._log(f"Wrote {result.csv_path}")
-        self._log(f"Wrote {result.xlsx_path}")
         if getattr(result, "inventory_csv_path", None):
-            self._log(f"Wrote inventory CSV {result.inventory_csv_path}")
+            self._log(f"Step 1 complete. Raw inventory CSV: {result.inventory_csv_path}")
+        self._log(f"Step 2 complete. Wrote audit CSV: {result.csv_path}")
+        self._log(f"Step 2 complete. Wrote audit XLSX: {result.xlsx_path}")
         self._log(f"Audited {result.entity_count} row(s) from {result.source_file_count} inventory file(s).")
         self._log(_summarize_endpoint_statuses(result.rows))
+        self.status_text.set(f"Complete. Audited {result.entity_count} row(s).")
         messagebox.showinfo(APP_TITLE, f"Wrote audit reports:\n{result.csv_path}\n{result.xlsx_path}")
+
+    def _handle_inventory_result(self, inventory_csv_path: Path, object_count: int) -> None:
+        self._log(f"Inventory export complete. Listed {object_count} object(s).")
+        self._log(f"Raw inventory CSV: {inventory_csv_path}")
+        self.status_text.set(f"Inventory export complete. Listed {object_count} object(s).")
+        messagebox.showinfo(APP_TITLE, f"Inventory CSV created:\n{inventory_csv_path}\n\nObjects listed: {object_count}")
 
     def _handle_error(self, message: str) -> None:
         self._log(f"Audit failed: {message}")
+        self.status_text.set("Failed")
         messagebox.showerror(APP_TITLE, message)
 
     def _set_running(self, running: bool) -> None:
         self.running = running
+        if running:
+            self.run_started_at = time.monotonic()
+            self._schedule_heartbeat()
+        else:
+            self.run_started_at = None
+            if self.heartbeat_after_id is not None:
+                self.root.after_cancel(self.heartbeat_after_id)
+                self.heartbeat_after_id = None
         state = "disabled" if running else "normal"
         self.file_button.configure(state=state)
+        self.inventory_button.configure(state=state)
         self.s3_button.configure(state=state)
+
+    def _schedule_heartbeat(self) -> None:
+        if self.heartbeat_after_id is not None:
+            self.root.after_cancel(self.heartbeat_after_id)
+        self.heartbeat_after_id = self.root.after(30000, self._heartbeat)
+
+    def _heartbeat(self) -> None:
+        self.heartbeat_after_id = None
+        if not self.running or self.run_started_at is None:
+            return
+        elapsed_seconds = int(time.monotonic() - self.run_started_at)
+        minutes, seconds = divmod(elapsed_seconds, 60)
+        self._log(f"Still working ({minutes}m {seconds:02d}s): {self.current_phase}")
+        self._schedule_heartbeat()
 
     def _log(self, message: str) -> None:
         self.log.insert("end", f"{message}\n")

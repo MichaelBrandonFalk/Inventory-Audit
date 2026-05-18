@@ -34,6 +34,6 @@ jobs:
       - name: Upload Windows zip artifact
         uses: actions/upload-artifact@v4
         with:
-          name: Inventory_Audit_v1_2-windows
-          path: dist/Inventory_Audit_v1_2-windows.zip
+          name: Inventory_Audit_v1_3-windows
+          path: dist/Inventory_Audit_v1_3-windows.zip
           if-no-files-found: error

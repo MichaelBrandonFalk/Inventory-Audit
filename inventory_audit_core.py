@@ -560,12 +560,16 @@ def run_s3_audit(
 ) -> AuditResult:
     from inventory_audit_s3 import scan_inventory_to_csv
 
-    inventory_csv_path, inventory_uri, items = scan_inventory_to_csv(
+    inventory_csv_path, _inventory_uri, _items = scan_inventory_to_csv(
         s3_uri,
         output_path,
         progress_callback=progress_callback,
     )
-    result = audit_items(items, inventory_uri, output_path)
+    if progress_callback:
+        progress_callback(f"Step 2/2: auditing raw inventory CSV {inventory_csv_path}")
+    result = run_audit(inventory_csv_path, output_path)
+    if progress_callback:
+        progress_callback("Audit report generation complete.")
     return AuditResult(
         csv_path=result.csv_path,
         xlsx_path=result.xlsx_path,
@@ -588,7 +592,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     try:
         if args.s3_uri:
             output_path = Path(args.output) if args.output else Path("inventory_audit_s3_report")
-            result = run_s3_audit(args.s3_uri, output_path)
+            result = run_s3_audit(args.s3_uri, output_path, progress_callback=lambda message: print(f"S3: {message}", flush=True))
         else:
             input_path = Path(str(args.input))
             output_path = Path(args.output) if args.output else input_path.with_name(f"{input_path.stem}_audit")

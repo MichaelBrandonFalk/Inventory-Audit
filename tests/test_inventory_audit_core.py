@@ -8,7 +8,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from inventory_audit_core import discover_entities, parse_art_asset, read_inventory, report_headers, run_audit
+from inventory_audit_core import InventoryItem, discover_entities, parse_art_asset, read_inventory, report_headers, run_audit, run_s3_audit
+import inventory_audit_s3
 from inventory_audit_s3 import parse_s3_inventory_uri, write_inventory_report
 
 
@@ -72,6 +73,40 @@ class InventoryAuditCoreTests(unittest.TestCase):
             self.assertEqual(rows[2], ["bucket", "key", "size_bytes", "last_modified", "s3_uri"])
             self.assertEqual(rows[3][0], "gacm-axinom-staging")
             self.assertTrue(rows[3][4].startswith("s3://gacm-axinom-staging/"))
+
+    def test_s3_audit_writes_inventory_then_audits_that_file(self) -> None:
+        original_list_inventory = inventory_audit_s3.list_inventory_from_s3
+
+        def fake_list_inventory(location, progress_callback=None):
+            return [
+                InventoryItem(
+                    bucket=location.bucket,
+                    key="movies/example_movie_1234567890123/feature/example.mov",
+                    size_bytes=1000,
+                    last_modified="2026-05-15T00:00:00+00:00",
+                )
+            ]
+
+        inventory_audit_s3.list_inventory_from_s3 = fake_list_inventory
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                progress_messages: list[str] = []
+                output = Path(temp_dir) / "s3_audit"
+                result = run_s3_audit(
+                    "s3://example-bucket/movies/",
+                    output,
+                    progress_callback=progress_messages.append,
+                )
+
+                self.assertTrue(result.inventory_csv_path)
+                self.assertTrue(result.inventory_csv_path.exists())
+                self.assertTrue(result.csv_path.exists())
+                self.assertTrue(result.xlsx_path.exists())
+                self.assertEqual(result.source_file_count, 1)
+                self.assertIn("Step 1/2: creating raw S3 inventory CSV.", progress_messages)
+                self.assertTrue(any(message.startswith("Step 2/2: auditing raw inventory CSV") for message in progress_messages))
+        finally:
+            inventory_audit_s3.list_inventory_from_s3 = original_list_inventory
 
     def test_series_inventory_discovers_series_season_and_episode_rows(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

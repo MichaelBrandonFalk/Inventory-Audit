@@ -1,12 +1,14 @@
 # Inventory Audit
 
-Inventory Audit v1.2 audits S3 inventories against first-pass endpoint readiness rules.
+Inventory Audit v1.3 audits S3 inventories against first-pass endpoint readiness rules.
 
-## What v1.2 Does
+## What v1.3 Does
 
 - Reads S3 inventory `.csv`, `.xlsx`, or `.xlsm` files with `bucket`, `key`, `size_bytes`, `last_modified`, and `s3_uri` columns.
 - Scans S3 paths directly using the same read-only inventory flow as S3 Organizer.
-- Writes direct S3 scan raw inventory CSVs before running the audit.
+- Can create a direct S3 raw inventory CSV without running the audit.
+- Writes direct S3 scan raw inventory CSVs before running the audit, then audits that CSV through the same parser as manually selected inventory files.
+- Shows detailed S3 scan status, including URI normalization, credential source, page requests, scanned object counts, inventory CSV write, and audit start.
 - Defaults report output to the user's `Downloads` folder.
 - Detects `Movie`, `Series`, `Season`, and `Episode` rows from S3-style folder paths.
 - Splits parent folder names into title and SKU when the folder ends with a UUID or long numeric SKU, such as `county_rescue_2310526531722`.
@@ -70,20 +72,20 @@ python3 -m pip install -r requirements.txt
 ## Build A macOS App
 
 ```bash
-./build_inventory_audit_v1_2.sh
+./build_inventory_audit_v1_3.sh
 ```
 
 The build script writes:
 
 ```text
 dist/Inventory Audit.app
-dist/Inventory_Audit_v1_2-macOS-arm64.zip
+dist/Inventory_Audit_v1_3-macOS-arm64.zip
 ```
 
 Intel macOS:
 
 ```bash
-./build_inventory_audit_v1_2_intel.sh
+./build_inventory_audit_v1_3_intel.sh
 ```
 
 Windows builds are handled by GitHub Actions:
