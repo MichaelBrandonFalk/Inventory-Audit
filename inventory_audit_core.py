@@ -68,6 +68,7 @@ class AuditResult:
     xlsx_path: Path
     rows: list[OrderedDict[str, str]]
     source_file_count: int
+    inventory_csv_path: Path | None = None
 
     @property
     def output_path(self) -> Path:
@@ -555,43 +556,57 @@ def run_audit(input_path: Path | str, output_path: Path | str) -> AuditResult:
 def run_s3_audit(
     s3_uri: str,
     output_path: Path | str,
-    profile: str = "",
-    region: str = "",
     progress_callback: Callable[[str], None] | None = None,
 ) -> AuditResult:
-    from inventory_audit_s3 import list_inventory_from_s3
+    from inventory_audit_s3 import scan_inventory_to_csv
 
-    inventory_uri, items = list_inventory_from_s3(
+    inventory_csv_path, inventory_uri, items = scan_inventory_to_csv(
         s3_uri,
-        profile=profile,
-        region=region,
+        output_path,
         progress_callback=progress_callback,
     )
-    return audit_items(items, inventory_uri, output_path)
+    result = audit_items(items, inventory_uri, output_path)
+    return AuditResult(
+        csv_path=result.csv_path,
+        xlsx_path=result.xlsx_path,
+        rows=result.rows,
+        source_file_count=result.source_file_count,
+        inventory_csv_path=inventory_csv_path,
+    )
 
 
 def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Audit S3 inventory CSV/XLSX files against endpoint requirements.")
     parser.add_argument("input", nargs="?", help="Inventory CSV or XLSX file")
     parser.add_argument("--s3", dest="s3_uri", help="S3 URI to scan directly, such as s3://bucket/movies/")
-    parser.add_argument("--profile", default="", help="Optional AWS profile name for direct S3 scans")
-    parser.add_argument("--region", default="", help="Optional AWS region for direct S3 scans")
     parser.add_argument("-o", "--output", help="Output audit base path. Both .csv and .xlsx files are written.")
     args = parser.parse_args(argv)
 
     if bool(args.input) == bool(args.s3_uri):
         parser.error("Provide exactly one inventory file path or --s3 s3://bucket/prefix.")
 
-    if args.s3_uri:
-        output_path = Path(args.output) if args.output else Path("inventory_audit_s3_report")
-        result = run_s3_audit(args.s3_uri, output_path, profile=args.profile, region=args.region)
-    else:
-        input_path = Path(str(args.input))
-        output_path = Path(args.output) if args.output else input_path.with_name(f"{input_path.stem}_audit")
-        result = run_audit(input_path, output_path)
+    try:
+        if args.s3_uri:
+            output_path = Path(args.output) if args.output else Path("inventory_audit_s3_report")
+            result = run_s3_audit(args.s3_uri, output_path)
+        else:
+            input_path = Path(str(args.input))
+            output_path = Path(args.output) if args.output else input_path.with_name(f"{input_path.stem}_audit")
+            result = run_audit(input_path, output_path)
+    except InventoryAuditError as exc:
+        print(str(exc))
+        return 1
+    except Exception as exc:  # noqa: BLE001
+        if exc.__class__.__name__ == "InventoryAuditError":
+            print(str(exc))
+        else:
+            print(f"Unexpected error: {exc}")
+        return 1
 
     print(f"Wrote {result.csv_path}")
     print(f"Wrote {result.xlsx_path}")
+    if result.inventory_csv_path:
+        print(f"Wrote {result.inventory_csv_path}")
     print(f"Audited {result.entity_count} row(s) from {result.source_file_count} inventory file(s).")
     return 0
 

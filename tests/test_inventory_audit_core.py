@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from inventory_audit_core import discover_entities, parse_art_asset, read_inventory, report_headers, run_audit
+from inventory_audit_s3 import parse_s3_inventory_uri, write_inventory_report
 
 
 class InventoryAuditCoreTests(unittest.TestCase):
@@ -50,6 +51,28 @@ class InventoryAuditCoreTests(unittest.TestCase):
     def test_endpoint_columns_are_first(self) -> None:
         self.assertEqual(report_headers()[:6], ["Axinom", "Amazon", "Roku", "Frndly", "T+", "YouTube"])
 
+    def test_s3_inventory_uri_normalization_matches_s3_organizer(self) -> None:
+        root = parse_s3_inventory_uri("s3://example-bucket")
+        self.assertEqual((root.bucket, root.prefix, root.normalized_uri), ("example-bucket", "", "s3://example-bucket/"))
+
+        prefix = parse_s3_inventory_uri("s3://example-bucket//series/county_rescue//")
+        self.assertEqual(prefix.bucket, "example-bucket")
+        self.assertEqual(prefix.prefix, "series/county_rescue/")
+        self.assertEqual(prefix.normalized_uri, "s3://example-bucket/series/county_rescue/")
+
+    def test_write_inventory_report_matches_s3_organizer_shape(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            output = Path(temp_dir) / "inventory.csv"
+            _inventory_uri, items = self._single_item_inventory(Path(temp_dir) / "source.csv")
+            write_inventory_report("s3://gacm-axinom-staging/movies/", items, output)
+
+            with output.open(newline="", encoding="utf-8") as handle:
+                rows = list(csv.reader(handle))
+            self.assertEqual(rows[0], ["inventory_uri", "s3://gacm-axinom-staging/movies/"])
+            self.assertEqual(rows[2], ["bucket", "key", "size_bytes", "last_modified", "s3_uri"])
+            self.assertEqual(rows[3][0], "gacm-axinom-staging")
+            self.assertTrue(rows[3][4].startswith("s3://gacm-axinom-staging/"))
+
     def test_series_inventory_discovers_series_season_and_episode_rows(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             inventory = Path(temp_dir) / "series.csv"
@@ -77,6 +100,10 @@ class InventoryAuditCoreTests(unittest.TestCase):
             writer.writerow(["bucket", "key", "size_bytes", "last_modified", "s3_uri"])
             for index, key in enumerate(keys, start=1):
                 writer.writerow(["gacm-axinom-staging", key, index * 1000, "2026-05-15T00:00:00+00:00", f"s3://gacm-axinom-staging/{key}"])
+
+    def _single_item_inventory(self, path: Path) -> tuple[str, list]:
+        self._write_inventory(path, ["movies/example_movie_1234567890123/feature/example.mov"])
+        return read_inventory(path)
 
 
 if __name__ == "__main__":

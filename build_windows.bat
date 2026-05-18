@@ -5,7 +5,7 @@ set "ROOT_DIR=%~dp0"
 set "VENV_DIR=%ROOT_DIR%.venv-windows"
 set "PYINSTALLER=%VENV_DIR%\Scripts\pyinstaller.exe"
 set "PYTHON_EXE=%VENV_DIR%\Scripts\python.exe"
-set "ZIP_PATH=%ROOT_DIR%dist\Inventory_Audit_v1_1-windows.zip"
+set "ZIP_PATH=%ROOT_DIR%dist\Inventory_Audit_v1_2-windows.zip"
 
 if not exist "%PYINSTALLER%" (
   if not exist "%PYTHON_EXE%" (
@@ -23,6 +23,8 @@ cd /d "%ROOT_DIR%"
   --noconfirm ^
   --windowed ^
   --name "Inventory Audit" ^
+  --collect-submodules keyring.backends ^
+  --collect-data keyring ^
   --collect-data boto3 ^
   --collect-data botocore ^
   --collect-data certifi ^
@@ -30,6 +32,7 @@ cd /d "%ROOT_DIR%"
   --hidden-import openpyxl ^
   --hidden-import boto3 ^
   --hidden-import botocore ^
+  --hidden-import keyring ^
   inventory_audit_app.py
 
 if exist "%ZIP_PATH%" del "%ZIP_PATH%"

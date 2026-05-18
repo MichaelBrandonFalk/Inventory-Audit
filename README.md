@@ -1,11 +1,13 @@
 # Inventory Audit
 
-Inventory Audit v1.1 audits S3 inventories against first-pass endpoint readiness rules.
+Inventory Audit v1.2 audits S3 inventories against first-pass endpoint readiness rules.
 
-## What v1 Does
+## What v1.2 Does
 
 - Reads S3 inventory `.csv`, `.xlsx`, or `.xlsm` files with `bucket`, `key`, `size_bytes`, `last_modified`, and `s3_uri` columns.
-- Scans S3 paths directly with AWS credentials from the default credential chain or an optional AWS profile.
+- Scans S3 paths directly using the same read-only inventory flow as S3 Organizer.
+- Writes direct S3 scan raw inventory CSVs before running the audit.
+- Defaults report output to the user's `Downloads` folder.
 - Detects `Movie`, `Series`, `Season`, and `Episode` rows from S3-style folder paths.
 - Splits parent folder names into title and SKU when the folder ends with a UUID or long numeric SKU, such as `county_rescue_2310526531722`.
 - Outputs one audit row per movie, series root, season, and episode.
@@ -52,12 +54,14 @@ python3 inventory_audit_core.py /path/to/inventory.csv -o /path/to/audit
 Direct S3 scan:
 
 ```bash
-python3 inventory_audit_core.py --s3 s3://bucket/path/ --profile optional-profile -o /path/to/audit
+python3 inventory_audit_core.py --s3 s3://bucket/path/ -o /path/to/audit
 ```
 
 ## Install Requirements
 
 CSV support uses only the Python standard library. XLSX input/output requires `openpyxl`. Direct S3 scans require `boto3`.
+
+For direct S3 scans, the app first tries saved S3 Organizer credentials and region settings. If those are not present, it falls back to the normal AWS credential chain on the machine.
 
 ```bash
 python3 -m pip install -r requirements.txt
@@ -66,20 +70,20 @@ python3 -m pip install -r requirements.txt
 ## Build A macOS App
 
 ```bash
-./build_inventory_audit_v1_1.sh
+./build_inventory_audit_v1_2.sh
 ```
 
 The build script writes:
 
 ```text
 dist/Inventory Audit.app
-dist/Inventory_Audit_v1_1-macOS-arm64.zip
+dist/Inventory_Audit_v1_2-macOS-arm64.zip
 ```
 
 Intel macOS:
 
 ```bash
-./build_inventory_audit_v1_1_intel.sh
+./build_inventory_audit_v1_2_intel.sh
 ```
 
 Windows builds are handled by GitHub Actions:
@@ -88,6 +92,14 @@ Windows builds are handled by GitHub Actions:
 .github/workflows/build-windows.yml
 ```
 
-## Phase 2 Notes
+## S3 Inventory Output
 
-The audit logic is intentionally separate from the Tkinter UI. The next phase can add direct S3 scanning by creating the same `bucket/key/size/last_modified/s3_uri` inventory rows before calling the core audit functions.
+Direct S3 scans are read-only. They list objects and write a raw inventory CSV with:
+
+- `bucket`
+- `key`
+- `size_bytes`
+- `last_modified`
+- `s3_uri`
+
+The audit then reads those rows through the same parser used for uploaded CSV/XLSX inventory files.

@@ -23,9 +23,7 @@ class InventoryAuditApp:
 
         self.input_path = tk.StringVar()
         self.s3_uri = tk.StringVar()
-        self.aws_profile = tk.StringVar()
-        self.aws_region = tk.StringVar()
-        self.output_dir = tk.StringVar(value=str(Path.cwd() / "inventory_audit_output"))
+        self.output_dir = tk.StringVar(value=str(_default_output_dir()))
         self.running = False
 
         self._build()
@@ -44,20 +42,18 @@ class InventoryAuditApp:
 
         self._file_row(frame, 2, "Inventory File", self.input_path, self._browse_input)
         self._entry_row(frame, 3, "S3 Path", self.s3_uri, "Optional direct scan, e.g. s3://bucket/movies/")
-        self._entry_row(frame, 4, "AWS Profile", self.aws_profile, "Optional")
-        self._entry_row(frame, 5, "AWS Region", self.aws_region, "Optional")
-        self._file_row(frame, 6, "Output Folder", self.output_dir, self._browse_output, directory=True)
+        self._file_row(frame, 4, "Output Folder", self.output_dir, self._browse_output, directory=True)
 
         button_frame = ttk.Frame(frame)
-        button_frame.grid(row=7, column=0, columnspan=3, sticky="w", pady=(12, 18))
+        button_frame.grid(row=5, column=0, columnspan=3, sticky="w", pady=(12, 18))
         self.file_button = ttk.Button(button_frame, text="Audit File", command=self._run_file)
         self.file_button.pack(side="left", padx=(0, 10))
         self.s3_button = ttk.Button(button_frame, text="Audit S3 Path", command=self._run_s3)
         self.s3_button.pack(side="left")
 
         self.log = scrolledtext.ScrolledText(frame, height=28, wrap="word")
-        self.log.grid(row=8, column=0, columnspan=3, sticky="nsew")
-        frame.rowconfigure(8, weight=1)
+        self.log.grid(row=6, column=0, columnspan=3, sticky="nsew")
+        frame.rowconfigure(6, weight=1)
 
         self._log("Ready. Choose an inventory export or enter an S3 path to start.")
 
@@ -77,7 +73,6 @@ class InventoryAuditApp:
         if selected:
             self.input_path.set(selected)
             input_path = Path(selected)
-            self.output_dir.set(str(input_path.parent))
             self._log(f"Selected {input_path}")
 
     def _browse_output(self) -> None:
@@ -130,18 +125,16 @@ class InventoryAuditApp:
 
         worker = threading.Thread(
             target=self._run_s3_worker,
-            args=(s3_value, output_path, self.aws_profile.get().strip(), self.aws_region.get().strip()),
+            args=(s3_value, output_path),
             daemon=True,
         )
         worker.start()
 
-    def _run_s3_worker(self, s3_uri: str, output_path: Path, profile: str, region: str) -> None:
+    def _run_s3_worker(self, s3_uri: str, output_path: Path) -> None:
         try:
             result = run_s3_audit(
                 s3_uri,
                 output_path,
-                profile=profile,
-                region=region,
                 progress_callback=lambda message: self.root.after(0, self._log, f"S3 scan: {message}"),
             )
         except (InventoryAuditError, OSError) as exc:
@@ -156,6 +149,8 @@ class InventoryAuditApp:
     def _handle_result(self, result) -> None:
         self._log(f"Wrote {result.csv_path}")
         self._log(f"Wrote {result.xlsx_path}")
+        if getattr(result, "inventory_csv_path", None):
+            self._log(f"Wrote inventory CSV {result.inventory_csv_path}")
         self._log(f"Audited {result.entity_count} row(s) from {result.source_file_count} inventory file(s).")
         self._log(_summarize_endpoint_statuses(result.rows))
         messagebox.showinfo(APP_TITLE, f"Wrote audit reports:\n{result.csv_path}\n{result.xlsx_path}")
@@ -191,6 +186,11 @@ def _safe_output_stem(value: str) -> str:
     cleaned = value.replace("s3://", "").strip("/").replace("/", "_")
     cleaned = re.sub(r"[^A-Za-z0-9._-]+", "_", cleaned).strip("_")
     return cleaned or "s3_inventory"
+
+
+def _default_output_dir() -> Path:
+    downloads = Path.home() / "Downloads"
+    return downloads if downloads.exists() else Path.home()
 
 
 def main() -> None:
