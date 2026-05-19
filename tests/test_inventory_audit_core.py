@@ -10,7 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from inventory_audit_core import InventoryItem, discover_entities, parse_art_asset, read_inventory, report_headers, run_audit, run_s3_audit
 import inventory_audit_s3
-from inventory_audit_s3 import parse_s3_inventory_uri, write_inventory_report
+from inventory_audit_s3 import inventory_report_path, parse_s3_inventory_uri, write_inventory_report
 
 
 class InventoryAuditCoreTests(unittest.TestCase):
@@ -73,6 +73,12 @@ class InventoryAuditCoreTests(unittest.TestCase):
             self.assertEqual(rows[2], ["bucket", "key", "size_bytes", "last_modified", "s3_uri"])
             self.assertEqual(rows[3][0], "gacm-axinom-staging")
             self.assertTrue(rows[3][4].startswith("s3://gacm-axinom-staging/"))
+
+    def test_inventory_report_path_matches_s3_organizer_timestamp_style(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            report_path = inventory_report_path(Path(temp_dir) / "audit_output_base")
+            self.assertEqual(report_path.parent, Path(temp_dir))
+            self.assertRegex(report_path.name, r"^Inventory_Audit_inventory_\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}\.csv$")
 
     def test_s3_audit_writes_inventory_then_audits_that_file(self) -> None:
         original_list_inventory = inventory_audit_s3.list_inventory_from_s3

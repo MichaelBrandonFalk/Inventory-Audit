@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 APP_NAME = "Inventory Audit"
-APP_VERSION = "1.3"
+APP_VERSION = "1.4"
 
 ART_FIELDS = [
     "ca_16x9",

@@ -1,12 +1,12 @@
 # Inventory Audit
 
-Inventory Audit v1.3 audits S3 inventories against first-pass endpoint readiness rules.
+Inventory Audit v1.4 audits S3 inventories against first-pass endpoint readiness rules.
 
-## What v1.3 Does
+## What v1.4 Does
 
 - Reads S3 inventory `.csv`, `.xlsx`, or `.xlsm` files with `bucket`, `key`, `size_bytes`, `last_modified`, and `s3_uri` columns.
 - Scans S3 paths directly using the same read-only inventory flow as S3 Organizer.
-- Can create a direct S3 raw inventory CSV without running the audit.
+- Can create a timestamped direct S3 raw inventory CSV without running the audit, using the same filename style as S3 Organizer inventory exports.
 - Writes direct S3 scan raw inventory CSVs before running the audit, then audits that CSV through the same parser as manually selected inventory files.
 - Shows detailed S3 scan status, including URI normalization, credential source, page requests, scanned object counts, inventory CSV write, and audit start.
 - Defaults report output to the user's `Downloads` folder.
@@ -69,13 +69,27 @@ For direct S3 scans, the app first tries saved S3 Organizer credentials and regi
 python3 -m pip install -r requirements.txt
 ```
 
-## Build A macOS App
+## Build Local macOS Test App
+
+Use this while v1.4 is being tested locally. It rebuilds the local app bundle without creating release assets.
+
+```bash
+./build_inventory_audit_v1_4_local.sh
+```
+
+The build script writes:
+
+```text
+dist/Inventory Audit.app
+```
+
+## Build Release Apps
 
 ```bash
 ./build_inventory_audit_v1_3.sh
 ```
 
-The build script writes:
+The v1.3 release build script writes:
 
 ```text
 dist/Inventory Audit.app

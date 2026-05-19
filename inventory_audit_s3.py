@@ -9,14 +9,17 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Callable
 
 from inventory_audit_core import InventoryAuditError, InventoryItem
+from inventory_audit_requirements import APP_NAME
 
 
 MAX_RETRY_ATTEMPTS = 4
 INITIAL_RETRY_DELAY_SECONDS = 1.0
+SECURITY_COMMAND_TIMEOUT_SECONDS = 5
 ProgressCallback = Callable[[str], None]
 
 
@@ -94,9 +97,23 @@ def sanitize_folder_path(value: str) -> str:
 
 def inventory_report_path(output_base: Path | str) -> Path:
     base = Path(output_base)
+    if base.exists() and base.is_dir():
+        return base / timestamped_inventory_filename()
     if base.suffix:
         base = base.with_suffix("")
-    return base.with_name(f"{base.name}_raw_inventory.csv")
+    target_dir = base.parent if str(base.parent) else default_output_dir()
+    return target_dir / timestamped_inventory_filename()
+
+
+def timestamped_inventory_filename() -> str:
+    slug = APP_NAME.replace(" ", "_")
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    return f"{slug}_inventory_{timestamp}.csv"
+
+
+def default_output_dir() -> Path:
+    downloads = Path.home() / "Downloads"
+    return downloads if downloads.exists() else Path.home()
 
 
 def write_inventory_report(inventory_uri: str, items: list[InventoryItem], report_path: Path | str) -> Path:
@@ -219,6 +236,11 @@ def load_s3_organizer_region() -> str:
 
 
 def load_s3_organizer_credentials() -> SavedCredentials | None:
+    if sys.platform == "darwin":
+        credentials = load_macos_s3_organizer_credentials()
+        if credentials:
+            return credentials
+
     try:
         import keyring
         from keyring.errors import KeyringError
@@ -248,6 +270,30 @@ def load_s3_organizer_credentials() -> SavedCredentials | None:
     return None
 
 
+def load_macos_s3_organizer_credentials() -> SavedCredentials | None:
+    service_candidates = ("s3-copy-desktop-app-v2", "s3-copy-desktop-app")
+    for service_name in service_candidates:
+        combined_value = get_macos_keychain_password(service_name, "aws_credentials_json")
+        if not combined_value:
+            continue
+        try:
+            payload = json.loads(combined_value)
+        except json.JSONDecodeError as exc:
+            raise InventoryAuditError(f"Could not read saved S3 Organizer credentials: invalid stored payload ({exc})") from exc
+        access_key = str(payload.get("access_key_id", "")).strip()
+        secret_key = str(payload.get("secret_access_key", "")).strip()
+        session_token = str(payload.get("session_token", "")).strip()
+        if access_key and secret_key:
+            return SavedCredentials(access_key, secret_key, session_token)
+
+    access_key = get_macos_keychain_password("s3-copy-desktop-app", "aws_access_key_id")
+    secret_key = get_macos_keychain_password("s3-copy-desktop-app", "aws_secret_access_key")
+    session_token = get_macos_keychain_password("s3-copy-desktop-app", "aws_session_token")
+    if access_key and secret_key:
+        return SavedCredentials(access_key, secret_key, session_token)
+    return None
+
+
 def get_stored_password(keyring_module, service_name: str, username: str) -> str:
     try:
         return (keyring_module.get_password(service_name, username) or "").strip()
@@ -261,12 +307,16 @@ def get_stored_password(keyring_module, service_name: str, username: str) -> str
 
 
 def get_macos_keychain_password(service_name: str, username: str) -> str:
-    result = subprocess.run(
-        ["security", "find-generic-password", "-s", service_name, "-a", username, "-w"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
+    try:
+        result = subprocess.run(
+            ["security", "find-generic-password", "-s", service_name, "-a", username, "-w"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=SECURITY_COMMAND_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return ""
     if result.returncode == 0:
         return result.stdout.strip()
 
