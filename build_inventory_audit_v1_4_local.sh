@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
-VERSION="1.4"
+VERSION="1.4.1"
 
 if [[ -x "$ROOT_DIR/.venv/bin/pyinstaller" ]]; then
   PYINSTALLER_BIN="$ROOT_DIR/.venv/bin/pyinstaller"

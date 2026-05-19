@@ -1,8 +1,8 @@
 # Inventory Audit
 
-Inventory Audit v1.4 audits S3 inventories against first-pass endpoint readiness rules.
+Inventory Audit v1.4.1 audits S3 inventories against first-pass endpoint readiness rules.
 
-## What v1.4 Does
+## What v1.4.1 Does
 
 - Reads S3 inventory `.csv`, `.xlsx`, or `.xlsm` files with `bucket`, `key`, `size_bytes`, `last_modified`, and `s3_uri` columns.
 - Scans S3 paths directly using the same read-only inventory flow as S3 Organizer.

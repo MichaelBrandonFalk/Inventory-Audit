@@ -19,7 +19,7 @@ from inventory_audit_requirements import APP_NAME
 
 MAX_RETRY_ATTEMPTS = 4
 INITIAL_RETRY_DELAY_SECONDS = 1.0
-SECURITY_COMMAND_TIMEOUT_SECONDS = 5
+SECURITY_COMMAND_TIMEOUT_SECONDS = 1
 ProgressCallback = Callable[[str], None]
 
 
@@ -237,9 +237,7 @@ def load_s3_organizer_region() -> str:
 
 def load_s3_organizer_credentials() -> SavedCredentials | None:
     if sys.platform == "darwin":
-        credentials = load_macos_s3_organizer_credentials()
-        if credentials:
-            return credentials
+        return load_macos_s3_organizer_credentials()
 
     try:
         import keyring

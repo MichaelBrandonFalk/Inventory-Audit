@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 import re
 import threading
@@ -9,7 +10,7 @@ import time
 import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
-from inventory_audit_core import InventoryAuditError, run_audit, run_s3_audit
+from inventory_audit_core import InventoryAuditError, run_audit
 from inventory_audit_requirements import APP_NAME, APP_VERSION
 from inventory_audit_s3 import scan_inventory_to_csv
 
@@ -150,14 +151,18 @@ class InventoryAuditApp:
 
     def _run_s3_worker(self, s3_uri: str, output_path: Path, audit_after_inventory: bool) -> None:
         try:
+            self._thread_progress("Worker started.")
+            inventory_csv_path, _inventory_uri, items = scan_inventory_to_csv(
+                s3_uri,
+                output_path,
+                progress_callback=self._thread_progress,
+            )
             if audit_after_inventory:
-                result = run_s3_audit(s3_uri, output_path, progress_callback=self._thread_progress)
+                self._thread_progress(f"Step 2/2: auditing raw inventory CSV {inventory_csv_path}")
+                result = run_audit(inventory_csv_path, output_path)
+                result = replace(result, inventory_csv_path=inventory_csv_path)
+                self._thread_progress("Audit report generation complete.")
             else:
-                inventory_csv_path, _inventory_uri, items = scan_inventory_to_csv(
-                    s3_uri,
-                    output_path,
-                    progress_callback=self._thread_progress,
-                )
                 self.root.after(0, self._handle_inventory_result, inventory_csv_path, len(items))
         except (InventoryAuditError, OSError) as exc:
             self.root.after(0, self._handle_error, str(exc))
