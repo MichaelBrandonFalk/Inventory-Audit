@@ -10,11 +10,12 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Iterable, Sequence
 
-from inventory_audit_requirements import ART_FIELDS, ENDPOINT_ORDER, get_art_requirements, get_media_requirements
+from inventory_audit_requirements import ART_FIELDS, ENDPOINT_ORDER, get_art_requirements, get_media_requirements, is_endpoint_applicable
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".gif"}
 MEDIA_EXTENSIONS = {".mov", ".vtt", ".srt"}
+MEDIA_FIELD_NAMES = {"mov", "vtt", "srt"}
 ART_RE = re.compile(
     r"(?:^|[_-])(?P<kind>ca|bg|tt)[_-](?P<ratio>\d+x\d+)[_-](?P<width>\d{3,5})x(?P<height>\d{3,5})(?=\.[a-z0-9]+$)",
     re.IGNORECASE,
@@ -350,13 +351,27 @@ def _looks_like_trailing_sku(token: str) -> bool:
     return token.isdigit() and len(token) >= 6
 
 
-def build_audit_rows(entities: Iterable[AuditEntity]) -> list[OrderedDict[str, str]]:
-    return [audit_entity(entity) for entity in entities]
+CustomRequirements = dict[str, set[str]]
 
 
-def audit_entity(entity: AuditEntity) -> OrderedDict[str, str]:
+def build_audit_rows(
+    entities: Iterable[AuditEntity],
+    custom_requirements: CustomRequirements | None = None,
+) -> list[OrderedDict[str, str]]:
+    normalized_custom = normalize_custom_requirements(custom_requirements)
+    return [audit_entity(entity, normalized_custom) for entity in entities]
+
+
+def audit_entity(
+    entity: AuditEntity,
+    custom_requirements: CustomRequirements | None = None,
+) -> OrderedDict[str, str]:
     media_assets = _best_media_assets(entity.files)
-    art_assets = _best_art_assets(entity.files)
+    normalized_custom = normalize_custom_requirements(custom_requirements)
+    custom_fields = normalized_custom.get(entity.content_type, set())
+    custom_art_fields = {field for field in custom_fields if field not in MEDIA_FIELD_NAMES}
+    art_headers = [*ART_FIELDS, *sorted(custom_art_fields - set(ART_FIELDS))]
+    art_assets = _best_art_assets(entity.files, set(art_headers))
     media_applicable = entity.content_type in {"Movie", "Episode"}
 
     values: dict[str, str] = {}
@@ -374,16 +389,29 @@ def audit_entity(entity: AuditEntity) -> OrderedDict[str, str]:
         values[field_name] = "yes" if asset and media_applicable else "n/a" if not media_applicable else "no"
         values[f"{field_name}_file"] = asset.filename if asset else ""
 
-    for art_field in ART_FIELDS:
+    for art_field in art_headers:
         asset = art_assets.get(art_field)
         values[art_field] = f"{asset[0]}x{asset[1]}" if asset else ""
 
     for endpoint in ENDPOINT_ORDER:
+        if not is_endpoint_applicable(endpoint, entity.content_type):
+            values[endpoint] = "N/A"
+            values[f"missing_{_safe_header(endpoint)}"] = ""
+            continue
         missing = _missing_requirements(values, endpoint, entity.content_type)
         values[endpoint] = "complete" if not missing else "incomplete"
         values[f"missing_{_safe_header(endpoint)}"] = ", ".join(missing)
 
-    return OrderedDict((header, values.get(header, "")) for header in report_headers())
+    if has_custom_requirements(normalized_custom):
+        custom_missing = _missing_custom_requirements(values, custom_fields)
+        if custom_fields:
+            values["custom audit"] = "complete" if not custom_missing else "incomplete"
+            values["missing_custom_audit"] = ", ".join(custom_missing)
+        else:
+            values["custom audit"] = "N/A"
+            values["missing_custom_audit"] = ""
+
+    return OrderedDict((header, values.get(header, "")) for header in report_headers(normalized_custom))
 
 
 def _best_media_assets(files: Iterable[InventoryItem]) -> dict[str, InventoryItem]:
@@ -397,7 +425,11 @@ def _best_media_assets(files: Iterable[InventoryItem]) -> dict[str, InventoryIte
     return best
 
 
-def _best_art_assets(files: Iterable[InventoryItem]) -> dict[str, tuple[int, int, int, str]]:
+def _best_art_assets(
+    files: Iterable[InventoryItem],
+    allowed_fields: set[str] | None = None,
+) -> dict[str, tuple[int, int, int, str]]:
+    allowed = set(ART_FIELDS) if allowed_fields is None else set(allowed_fields)
     best: dict[str, tuple[int, int, int, str]] = {}
     for item in files:
         if item.suffix not in IMAGE_EXTENSIONS:
@@ -406,7 +438,7 @@ def _best_art_assets(files: Iterable[InventoryItem]) -> dict[str, tuple[int, int
         if not parsed:
             continue
         field_name, width, height = parsed
-        if field_name not in ART_FIELDS:
+        if field_name not in allowed:
             continue
         score = (width * height, item.size_bytes)
         current = best.get(field_name)
@@ -437,28 +469,69 @@ def _missing_requirements(row: dict[str, str], endpoint: str, content_type: str)
     return missing
 
 
+def _missing_custom_requirements(row: dict[str, str], required_fields: set[str]) -> list[str]:
+    missing: list[str] = []
+    for field in sorted(required_fields):
+        if field in MEDIA_FIELD_NAMES:
+            if row.get(field) != "yes":
+                missing.append(field)
+        elif not row.get(field):
+            missing.append(field)
+    return missing
+
+
+def normalize_custom_requirements(custom_requirements: CustomRequirements | None = None) -> CustomRequirements:
+    if not custom_requirements:
+        return {}
+    return {
+        str(content_type): {str(field).strip() for field in fields if str(field).strip()}
+        for content_type, fields in custom_requirements.items()
+    }
+
+
+def has_custom_requirements(custom_requirements: CustomRequirements | None = None) -> bool:
+    return any(fields for fields in normalize_custom_requirements(custom_requirements).values())
+
+
+def custom_art_fields(custom_requirements: CustomRequirements | None = None) -> list[str]:
+    fields: set[str] = set()
+    for required_fields in normalize_custom_requirements(custom_requirements).values():
+        fields.update(field for field in required_fields if field not in MEDIA_FIELD_NAMES and field not in ART_FIELDS)
+    return sorted(fields)
+
+
 def _safe_header(endpoint: str) -> str:
     return endpoint.replace("+", "plus").replace(" ", "_").replace("-", "_")
 
 
-def report_headers() -> list[str]:
+def report_headers(custom_requirements: CustomRequirements | None = None) -> list[str]:
     """Return the user-facing report column order.
 
     Endpoint completion columns intentionally come first so the report opens on
     readiness status before lower-level file detail.
     """
 
+    has_custom = has_custom_requirements(custom_requirements)
+    status_headers = [*ENDPOINT_ORDER]
+    if has_custom:
+        status_headers.append("custom audit")
     missing_headers = [f"missing_{_safe_header(endpoint)}" for endpoint in ENDPOINT_ORDER]
+    if has_custom:
+        missing_headers.append("missing_custom_audit")
     identity_headers = ["content_type", "name", "title", "sku", "season", "episode", "s3_path", "file_count"]
     media_headers = ["mov", "mov_file", "vtt", "vtt_file", "srt", "srt_file"]
-    return [*ENDPOINT_ORDER, *missing_headers, *identity_headers, *media_headers, *ART_FIELDS]
+    return [*status_headers, *missing_headers, *identity_headers, *media_headers, *ART_FIELDS, *custom_art_fields(custom_requirements)]
 
 
-def write_audit_csv(rows: Sequence[OrderedDict[str, str]], output_path: Path | str) -> Path:
+def write_audit_csv(
+    rows: Sequence[OrderedDict[str, str]],
+    output_path: Path | str,
+    custom_requirements: CustomRequirements | None = None,
+) -> Path:
     destination = Path(output_path)
     destination.parent.mkdir(parents=True, exist_ok=True)
 
-    fieldnames = report_headers()
+    fieldnames = report_headers(custom_requirements)
 
     with destination.open("w", newline="", encoding="utf-8") as handle:
         writer = csv.DictWriter(handle, fieldnames=fieldnames, extrasaction="ignore")
@@ -468,7 +541,11 @@ def write_audit_csv(rows: Sequence[OrderedDict[str, str]], output_path: Path | s
     return destination
 
 
-def write_audit_xlsx(rows: Sequence[OrderedDict[str, str]], output_path: Path | str) -> Path:
+def write_audit_xlsx(
+    rows: Sequence[OrderedDict[str, str]],
+    output_path: Path | str,
+    custom_requirements: CustomRequirements | None = None,
+) -> Path:
     destination = Path(output_path).with_suffix(".xlsx")
     destination.parent.mkdir(parents=True, exist_ok=True)
 
@@ -479,7 +556,7 @@ def write_audit_xlsx(rows: Sequence[OrderedDict[str, str]], output_path: Path | 
     except ImportError as exc:  # pragma: no cover - depends on app packaging
         raise InventoryAuditError("openpyxl is required to write Excel output. Install requirements.txt.") from exc
 
-    headers = report_headers()
+    headers = report_headers(custom_requirements)
     workbook = Workbook()
     worksheet = workbook.active
     worksheet.title = "Inventory Audit"
@@ -499,8 +576,14 @@ def write_audit_xlsx(rows: Sequence[OrderedDict[str, str]], output_path: Path | 
         cell.font = header_font
         cell.alignment = Alignment(horizontal="center")
 
-    endpoint_cols = {endpoint: headers.index(endpoint) + 1 for endpoint in ENDPOINT_ORDER}
-    missing_cols = {f"missing_{_safe_header(endpoint)}": headers.index(f"missing_{_safe_header(endpoint)}") + 1 for endpoint in ENDPOINT_ORDER}
+    endpoint_names = [*ENDPOINT_ORDER]
+    if has_custom_requirements(custom_requirements):
+        endpoint_names.append("custom audit")
+    endpoint_cols = {endpoint: headers.index(endpoint) + 1 for endpoint in endpoint_names}
+    missing_names = [f"missing_{_safe_header(endpoint)}" for endpoint in ENDPOINT_ORDER]
+    if has_custom_requirements(custom_requirements):
+        missing_names.append("missing_custom_audit")
+    missing_cols = {name: headers.index(name) + 1 for name in missing_names}
     for row_idx in range(2, worksheet.max_row + 1):
         for col_idx in endpoint_cols.values():
             cell = worksheet.cell(row_idx, col_idx)
@@ -539,23 +622,33 @@ def resolve_output_paths(output_base: Path | str) -> tuple[Path, Path]:
     return base.with_suffix(".csv"), base.with_suffix(".xlsx")
 
 
-def audit_items(items: Sequence[InventoryItem], inventory_uri: str, output_base: Path | str) -> AuditResult:
+def audit_items(
+    items: Sequence[InventoryItem],
+    inventory_uri: str,
+    output_base: Path | str,
+    custom_requirements: CustomRequirements | None = None,
+) -> AuditResult:
     entities = discover_entities(items, inventory_uri)
-    rows = build_audit_rows(entities)
+    rows = build_audit_rows(entities, custom_requirements)
     csv_path, xlsx_path = resolve_output_paths(output_base)
-    write_audit_csv(rows, csv_path)
-    write_audit_xlsx(rows, xlsx_path)
+    write_audit_csv(rows, csv_path, custom_requirements)
+    write_audit_xlsx(rows, xlsx_path, custom_requirements)
     return AuditResult(csv_path=csv_path, xlsx_path=xlsx_path, rows=rows, source_file_count=len(items))
 
 
-def run_audit(input_path: Path | str, output_path: Path | str) -> AuditResult:
+def run_audit(
+    input_path: Path | str,
+    output_path: Path | str,
+    custom_requirements: CustomRequirements | None = None,
+) -> AuditResult:
     inventory_uri, items = read_inventory(input_path)
-    return audit_items(items, inventory_uri, output_path)
+    return audit_items(items, inventory_uri, output_path, custom_requirements)
 
 
 def run_s3_audit(
     s3_uri: str,
     output_path: Path | str,
+    custom_requirements: CustomRequirements | None = None,
     progress_callback: Callable[[str], None] | None = None,
 ) -> AuditResult:
     from inventory_audit_s3 import scan_inventory_to_csv
@@ -567,7 +660,7 @@ def run_s3_audit(
     )
     if progress_callback:
         progress_callback(f"Step 2/2: auditing raw inventory CSV {inventory_csv_path}")
-    result = run_audit(inventory_csv_path, output_path)
+    result = run_audit(inventory_csv_path, output_path, custom_requirements)
     if progress_callback:
         progress_callback("Audit report generation complete.")
     return AuditResult(

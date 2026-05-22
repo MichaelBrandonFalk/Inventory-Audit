@@ -9,6 +9,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from inventory_audit_core import InventoryItem, discover_entities, parse_art_asset, read_inventory, report_headers, run_audit, run_s3_audit
+from inventory_audit_requirements import ART_REQUIREMENTS
 import inventory_audit_s3
 from inventory_audit_s3 import inventory_report_path, parse_s3_inventory_uri, write_inventory_report
 
@@ -132,6 +133,69 @@ class InventoryAuditCoreTests(unittest.TestCase):
             entities = discover_entities(items, inventory_uri)
             self.assertEqual([entity.content_type for entity in entities], ["Series", "Season", "Episode"])
             self.assertEqual([entity.name for entity in entities], ["county_rescue", "county_rescue_s02", "county_rescue_s02_e03"])
+
+    def test_non_applicable_series_and_season_endpoint_statuses_are_na(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            inventory = Path(temp_dir) / "series.csv"
+            self._write_inventory(
+                inventory,
+                [
+                    "series/county_rescue_2310526531722/county_rescue_eng_ca_16x9_3840x2160.jpg",
+                    "series/county_rescue_2310526531722/s02/county_rescue_s02_eng_ca_16x9_3840x2160.jpg",
+                ],
+            )
+
+            result = run_audit(inventory, Path(temp_dir) / "audit")
+            series_row = next(row for row in result.rows if row["content_type"] == "Series")
+            season_row = next(row for row in result.rows if row["content_type"] == "Season")
+            self.assertEqual(series_row["Amazon"], "N/A")
+            self.assertEqual(series_row["T+"], "N/A")
+            self.assertEqual(season_row["Roku"], "N/A")
+            self.assertEqual(season_row["Frndly"], "N/A")
+            self.assertEqual(season_row["YouTube"], "N/A")
+
+    def test_bg_2x3_is_tracked_but_not_required_for_completion(self) -> None:
+        original = set(ART_REQUIREMENTS["Roku"]["Movie"])
+        ART_REQUIREMENTS["Roku"]["Movie"] = {*original, "bg_2x3"}
+        try:
+            with tempfile.TemporaryDirectory() as temp_dir:
+                inventory = Path(temp_dir) / "movie.csv"
+                self._write_inventory(
+                    inventory,
+                    [
+                        "movies/example_movie_1234567890123/feature/example_eng_ca_16x9_3840x2160.jpg",
+                        "movies/example_movie_1234567890123/feature/example_eng_ca_2x3_2000x3000.jpg",
+                        "movies/example_movie_1234567890123/feature/example_eng_bg_16x9_3840x2160.jpg",
+                        "movies/example_movie_1234567890123/feature/example.mov",
+                        "movies/example_movie_1234567890123/feature/example_cc_eng.vtt",
+                    ],
+                )
+                row = run_audit(inventory, Path(temp_dir) / "audit").rows[0]
+                self.assertEqual(row["Roku"], "complete")
+                self.assertNotIn("bg_2x3", row["missing_Roku"])
+        finally:
+            ART_REQUIREMENTS["Roku"]["Movie"] = original
+
+    def test_custom_audit_requirements_add_custom_status_and_art_field(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            inventory = Path(temp_dir) / "movie.csv"
+            self._write_inventory(
+                inventory,
+                [
+                    "movies/example_movie_1234567890123/feature/example.mov",
+                    "movies/example_movie_1234567890123/feature/example.srt",
+                    "movies/example_movie_1234567890123/feature/example_eng_ca_7x3_3500x1500.jpg",
+                ],
+            )
+            result = run_audit(
+                inventory,
+                Path(temp_dir) / "audit",
+                custom_requirements={"Movie": {"srt", "ca_7x3"}},
+            )
+            row = result.rows[0]
+            self.assertIn("custom audit", report_headers({"Movie": {"srt", "ca_7x3"}}))
+            self.assertEqual(row["custom audit"], "complete")
+            self.assertEqual(row["ca_7x3"], "3500x1500")
 
     def _write_inventory(self, path: Path, keys: list[str]) -> None:
         with path.open("w", newline="", encoding="utf-8") as handle:

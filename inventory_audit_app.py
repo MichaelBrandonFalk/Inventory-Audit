@@ -11,7 +11,17 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, scrolledtext, ttk
 
 from inventory_audit_core import InventoryAuditError, run_audit
-from inventory_audit_requirements import APP_NAME, APP_VERSION
+from inventory_audit_requirements import (
+    APP_NAME,
+    APP_VERSION,
+    CONTENT_TYPES,
+    CUSTOM_REQUIREMENT_FIELD_OPTIONS,
+    ENDPOINT_ORDER,
+    OPTIONAL_ART_FIELDS,
+    get_art_requirements,
+    get_media_requirements,
+    is_endpoint_applicable,
+)
 from inventory_audit_s3 import scan_inventory_to_csv
 
 
@@ -32,6 +42,7 @@ class InventoryAuditApp:
         self.run_started_at: float | None = None
         self.current_phase = "Ready"
         self.heartbeat_after_id: str | None = None
+        self.custom_requirements: dict[str, set[str]] = {content_type: set() for content_type in CONTENT_TYPES}
 
         self._build()
 
@@ -58,7 +69,9 @@ class InventoryAuditApp:
         self.inventory_button = ttk.Button(button_frame, text="Create S3 Inventory CSV", command=self._run_s3_inventory)
         self.inventory_button.pack(side="left", padx=(0, 10))
         self.s3_button = ttk.Button(button_frame, text="Audit S3 Path", command=self._run_s3)
-        self.s3_button.pack(side="left")
+        self.s3_button.pack(side="left", padx=(0, 10))
+        self.requirements_button = ttk.Button(button_frame, text="Audit Requirements", command=self._open_requirements_window)
+        self.requirements_button.pack(side="left")
 
         ttk.Label(frame, textvariable=self.status_text).grid(row=6, column=0, columnspan=3, sticky="w", pady=(0, 8))
 
@@ -106,7 +119,7 @@ class InventoryAuditApp:
 
         self._log(f"Running audit for {input_path} ...")
         try:
-            result = run_audit(input_path, output_path)
+            result = run_audit(input_path, output_path, self._custom_requirements_for_run())
         except (InventoryAuditError, OSError) as exc:
             self._log(f"Audit failed: {exc}")
             messagebox.showerror(APP_TITLE, str(exc))
@@ -159,7 +172,7 @@ class InventoryAuditApp:
             )
             if audit_after_inventory:
                 self._thread_progress(f"Step 2/2: auditing raw inventory CSV {inventory_csv_path}")
-                result = run_audit(inventory_csv_path, output_path)
+                result = run_audit(inventory_csv_path, output_path, self._custom_requirements_for_run())
                 result = replace(result, inventory_csv_path=inventory_csv_path)
                 self._thread_progress("Audit report generation complete.")
             else:
@@ -217,6 +230,7 @@ class InventoryAuditApp:
         self.file_button.configure(state=state)
         self.inventory_button.configure(state=state)
         self.s3_button.configure(state=state)
+        self.requirements_button.configure(state=state)
 
     def _schedule_heartbeat(self) -> None:
         if self.heartbeat_after_id is not None:
@@ -235,6 +249,155 @@ class InventoryAuditApp:
     def _log(self, message: str) -> None:
         self.log.insert("end", f"{message}\n")
         self.log.see("end")
+
+    def _custom_requirements_for_run(self) -> dict[str, set[str]]:
+        return {content_type: set(fields) for content_type, fields in self.custom_requirements.items() if fields}
+
+    def _open_requirements_window(self) -> None:
+        window = tk.Toplevel(self.root)
+        window.title("Audit Requirements")
+        window.geometry("900x520")
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(0, weight=1)
+
+        columns = ("endpoint", "content_type", "status", "required", "optional")
+        tree = ttk.Treeview(window, columns=columns, show="headings")
+        headings = {
+            "endpoint": "Endpoint",
+            "content_type": "Type",
+            "status": "Status",
+            "required": "Required Fields",
+            "optional": "Optional/Tracked",
+        }
+        widths = {"endpoint": 120, "content_type": 90, "status": 90, "required": 460, "optional": 140}
+        for column in columns:
+            tree.heading(column, text=headings[column])
+            tree.column(column, width=widths[column], anchor="w")
+        tree.grid(row=0, column=0, sticky="nsew", padx=12, pady=(12, 8))
+
+        scrollbar = ttk.Scrollbar(window, orient="vertical", command=tree.yview)
+        scrollbar.grid(row=0, column=1, sticky="ns", pady=(12, 8))
+        tree.configure(yscrollcommand=scrollbar.set)
+
+        for row in self._requirements_rows():
+            tree.insert("", "end", values=row)
+
+        button_frame = ttk.Frame(window)
+        button_frame.grid(row=1, column=0, columnspan=2, sticky="w", padx=12, pady=(0, 12))
+        ttk.Button(button_frame, text="Export XLSX", command=lambda: self._export_requirements_xlsx(window)).pack(side="left", padx=(0, 10))
+        ttk.Button(button_frame, text="Add Custom Audit Requirements", command=self._open_custom_requirements_window).pack(side="left")
+
+    def _requirements_rows(self) -> list[tuple[str, str, str, str, str]]:
+        rows: list[tuple[str, str, str, str, str]] = []
+        for endpoint in ENDPOINT_ORDER:
+            for content_type in CONTENT_TYPES:
+                if not is_endpoint_applicable(endpoint, content_type):
+                    rows.append((endpoint, content_type, "N/A", "N/A", ""))
+                    continue
+                required = sorted(get_media_requirements(endpoint, content_type) | get_art_requirements(endpoint, content_type))
+                rows.append((endpoint, content_type, "Required" if required else "No required fields", ", ".join(required), ", ".join(sorted(OPTIONAL_ART_FIELDS))))
+
+        for content_type in CONTENT_TYPES:
+            fields = sorted(self.custom_requirements.get(content_type, set()))
+            rows.append(("custom audit", content_type, "Required" if fields else "N/A", ", ".join(fields) if fields else "N/A", ""))
+        return rows
+
+    def _export_requirements_xlsx(self, parent: tk.Toplevel) -> None:
+        selected = filedialog.asksaveasfilename(
+            parent=parent,
+            title="Export Audit Requirements",
+            defaultextension=".xlsx",
+            filetypes=[("Excel Workbook", "*.xlsx")],
+            initialfile=f"Inventory_Audit_requirements_v{APP_VERSION.replace('.', '_')}.xlsx",
+        )
+        if not selected:
+            return
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill
+            from openpyxl.utils import get_column_letter
+        except ImportError as exc:
+            messagebox.showerror(APP_TITLE, f"openpyxl is required to export XLSX files: {exc}", parent=parent)
+            return
+
+        headers = ["Endpoint", "Type", "Status", "Required Fields", "Optional/Tracked"]
+        workbook = Workbook()
+        worksheet = workbook.active
+        worksheet.title = "Audit Requirements"
+        worksheet.append(headers)
+        for row in self._requirements_rows():
+            worksheet.append(list(row))
+
+        header_fill = PatternFill("solid", fgColor="1F4E78")
+        header_font = Font(color="FFFFFF", bold=True)
+        for cell in worksheet[1]:
+            cell.fill = header_fill
+            cell.font = header_font
+        for col_idx, header in enumerate(headers, start=1):
+            max_len = len(header)
+            for row_idx in range(2, worksheet.max_row + 1):
+                max_len = max(max_len, len(str(worksheet.cell(row_idx, col_idx).value or "")))
+            worksheet.column_dimensions[get_column_letter(col_idx)].width = min(max(max_len + 2, 12), 70)
+        workbook.save(selected)
+        messagebox.showinfo(APP_TITLE, f"Exported audit requirements:\n{selected}", parent=parent)
+
+    def _open_custom_requirements_window(self) -> None:
+        window = tk.Toplevel(self.root)
+        window.title("Custom Audit Requirements")
+        window.geometry("560x520")
+
+        type_frame = ttk.LabelFrame(window, text="Apply To")
+        type_frame.pack(fill="x", padx=12, pady=(12, 8))
+        field_frame = ttk.LabelFrame(window, text="Required Fields")
+        field_frame.pack(fill="both", expand=True, padx=12, pady=(0, 8))
+
+        existing = self._custom_requirements_for_run()
+        existing_types = {content_type for content_type, fields in existing.items() if fields}
+        existing_fields = {field for fields in existing.values() for field in fields}
+
+        type_vars: dict[str, tk.BooleanVar] = {}
+        for idx, content_type in enumerate(CONTENT_TYPES):
+            variable = tk.BooleanVar(value=content_type in existing_types if existing_types else content_type in {"Movie", "Episode"})
+            type_vars[content_type] = variable
+            ttk.Checkbutton(type_frame, text=content_type, variable=variable).grid(row=0, column=idx, sticky="w", padx=8, pady=8)
+
+        field_vars: dict[str, tk.BooleanVar] = {}
+        for idx, field_name in enumerate(CUSTOM_REQUIREMENT_FIELD_OPTIONS):
+            variable = tk.BooleanVar(value=field_name in existing_fields)
+            field_vars[field_name] = variable
+            ttk.Checkbutton(field_frame, text=field_name, variable=variable).grid(row=idx // 3, column=idx % 3, sticky="w", padx=10, pady=5)
+
+        button_frame = ttk.Frame(window)
+        button_frame.pack(fill="x", padx=12, pady=(0, 12))
+        ttk.Button(button_frame, text="Save Custom Requirements", command=lambda: self._save_custom_requirements(window, type_vars, field_vars)).pack(side="left", padx=(0, 10))
+        ttk.Button(button_frame, text="Clear Custom Requirements", command=lambda: self._clear_custom_requirements(window)).pack(side="left")
+
+    def _save_custom_requirements(
+        self,
+        window: tk.Toplevel,
+        type_vars: dict[str, tk.BooleanVar],
+        field_vars: dict[str, tk.BooleanVar],
+    ) -> None:
+        selected_types = [content_type for content_type, variable in type_vars.items() if variable.get()]
+        selected_fields = {field_name for field_name, variable in field_vars.items() if variable.get()}
+        self.custom_requirements = {content_type: set() for content_type in CONTENT_TYPES}
+        for content_type in selected_types:
+            self.custom_requirements[content_type] = set(selected_fields)
+        self._log(f"Custom audit requirements updated: {self._custom_requirement_summary()}")
+        window.destroy()
+
+    def _clear_custom_requirements(self, window: tk.Toplevel) -> None:
+        self.custom_requirements = {content_type: set() for content_type in CONTENT_TYPES}
+        self._log("Custom audit requirements cleared.")
+        window.destroy()
+
+    def _custom_requirement_summary(self) -> str:
+        parts = []
+        for content_type in CONTENT_TYPES:
+            fields = sorted(self.custom_requirements.get(content_type, set()))
+            if fields:
+                parts.append(f"{content_type}={','.join(fields)}")
+        return "; ".join(parts) if parts else "none"
 
 
 def _summarize_endpoint_statuses(rows: list[dict[str, str]]) -> str:

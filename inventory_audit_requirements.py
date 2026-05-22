@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 APP_NAME = "Inventory Audit"
-APP_VERSION = "1.4.1"
+APP_VERSION = "1.4.2"
+
+CONTENT_TYPES = ["Movie", "Series", "Season", "Episode"]
 
 ART_FIELDS = [
     "ca_16x9",
@@ -17,6 +19,19 @@ ART_FIELDS = [
 ]
 
 ENDPOINT_ORDER = ["Axinom", "Amazon", "Roku", "Frndly", "T+", "YouTube"]
+OPTIONAL_ART_FIELDS = {"bg_2x3"}
+CUSTOM_REQUIREMENT_FIELD_OPTIONS = [
+    "mov",
+    "vtt",
+    "srt",
+    *ART_FIELDS,
+    "ca_7x3",
+]
+
+NOT_APPLICABLE_ENDPOINTS_BY_TYPE: dict[str, set[str]] = {
+    "Series": {"Amazon", "T+"},
+    "Season": {"Roku", "Frndly", "YouTube"},
+}
 
 # These rules are backed into v1 from the supplied "Streamlined Logic For Art Req
 # in Rally Publishes (9).xlsx" matrix. Optional sheet entries are intentionally
@@ -57,19 +72,11 @@ ART_REQUIREMENTS: dict[str, dict[str, set[str]]] = {
 
 
 def get_art_requirements(endpoint: str, content_type: str) -> set[str]:
-    """Return required art fields for an endpoint and row type.
-
-    Some endpoints in the v1 matrix define Series but not Season. Season rows
-    fall back to Series rules in those cases because the app is expected to
-    audit Season rows for every endpoint.
-    """
+    """Return required art fields for an endpoint and row type."""
 
     endpoint_rules = ART_REQUIREMENTS.get(endpoint, {})
-    if content_type in endpoint_rules:
-        return set(endpoint_rules[content_type])
-    if content_type == "Season" and "Series" in endpoint_rules:
-        return set(endpoint_rules["Series"])
-    return set()
+    requirements = set(endpoint_rules.get(content_type, set()))
+    return requirements - OPTIONAL_ART_FIELDS
 
 
 def get_media_requirements(endpoint: str, content_type: str) -> set[str]:
@@ -84,3 +91,7 @@ def get_media_requirements(endpoint: str, content_type: str) -> set[str]:
     else:
         requirements.add("vtt")
     return requirements
+
+
+def is_endpoint_applicable(endpoint: str, content_type: str) -> bool:
+    return endpoint not in NOT_APPLICABLE_ENDPOINTS_BY_TYPE.get(content_type, set())

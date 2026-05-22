@@ -1,14 +1,18 @@
 # Inventory Audit
 
-Inventory Audit v1.4.1 audits S3 inventories against first-pass endpoint readiness rules.
+Inventory Audit v1.4.2 audits S3 inventories against first-pass endpoint readiness rules.
 
-## What v1.4.1 Does
+## What v1.4.2 Does
 
 - Reads S3 inventory `.csv`, `.xlsx`, or `.xlsm` files with `bucket`, `key`, `size_bytes`, `last_modified`, and `s3_uri` columns.
 - Scans S3 paths directly using the same read-only inventory flow as S3 Organizer.
 - Can create a timestamped direct S3 raw inventory CSV without running the audit, using the same filename style as S3 Organizer inventory exports.
 - Writes direct S3 scan raw inventory CSVs before running the audit, then audits that CSV through the same parser as manually selected inventory files.
 - Shows detailed S3 scan status, including URI normalization, credential source, page requests, scanned object counts, inventory CSV write, and audit start.
+- Shows built-in endpoint/type audit requirements in the app and can export them as XLSX.
+- Supports session custom audit requirements that add a `custom audit` readiness column.
+- Marks non-applicable endpoint/type combinations as `N/A` instead of complete or incomplete.
+- Tracks `bg_2x3` art when present, but never uses it to fail built-in endpoint completion.
 - Defaults report output to the user's `Downloads` folder.
 - Detects `Movie`, `Series`, `Season`, and `Episode` rows from S3-style folder paths.
 - Splits parent folder names into title and SKU when the folder ends with a UUID or long numeric SKU, such as `county_rescue_2310526531722`.
@@ -71,7 +75,7 @@ python3 -m pip install -r requirements.txt
 
 ## Build Local macOS Test App
 
-Use this while v1.4 is being tested locally. It rebuilds the local app bundle without creating release assets.
+Use this while v1.4.2 is being tested locally. It rebuilds the local app bundle without creating release assets.
 
 ```bash
 ./build_inventory_audit_v1_4_local.sh
